@@ -99,9 +99,25 @@ Healthcheck sprawdza czy `last_check` w pliku stanu nie jest starszy niż 5 minu
 
 ---
 
+## Automatyczne tłumaczenie (opcjonalne)
+
+| Cecha | Opis |
+|-------|------|
+| Biblioteka | `deep-translator` (Google Translate, darmowe, bez klucza API) |
+| Konfiguracja | `TRANSLATE_TO=pl` w `.env` (lub `de`, `fr`, `es`, ...) |
+| Co jest tłumaczone | Tylko treść posta i cytatów |
+| Co NIE jest tłumaczone | Usernames, linki, nagłówki, tagi HTML |
+| Limit znaków | 4500 na request (Google Translate limit) |
+| Fallback | Jeśli tłumaczenie się nie uda → oryginał po angielsku |
+
+---
+
 ## Zależności
 
-**Żadne nowe zależności nie zostały dodane.** Cały nowy kod korzysta z:
+**Jedna nowa zależność:**
+- `deep-translator` — do tłumaczenia postów (opcjonalne, Google Translate)
+
+**Reszta kodu korzysta ze stdlib:**
 - `urllib.request` (stdlib) — do Telegram API
 - `html.parser` (stdlib) — do czyszczenia HTML
 - `tempfile`, `json`, `signal`, `os` (stdlib) — do stanu i sygnałów

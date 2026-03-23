@@ -1,171 +1,197 @@
-# truthbrush
-Truthbrush is an API client for Truth Social.
+# truthbrush_telegram
 
-Currently, this tool can:
+Fork projektu [stanfordio/truthbrush](https://github.com/stanfordio/truthbrush) rozszerzony o **automatyczny monitoring Truth Social i przekazywanie postów na Telegram**.
 
-* Search for users, statuses, groups, or hashtags
-* Pull a user's statuses
-* Pull the list of "People to Follow" or suggested users
-* Pull "trending" hashtags
-* Pull "trending" Truth posts
-* Pull ads
-* Pull a user's metadata
-* Pull the list of users who liked a post
-* Pull the list of comments on a post
-* Pull "trending" groups
-* Pull list of suggested groups
-* Pull "trending" group hashtags
-* Pull posts from group timeline
+## Co robi?
 
-Truthbrush is designed for academic research, open source intelligence gathering, and data archival. It pulls all data from the publicly accessible API.
+Monitoruje wybranych uzytkownikow Truth Social i automatycznie przesyla ich nowe posty na kanal Telegram. Obsluguje:
 
-## Installation
+- Zwykle posty (tekst + zdjecia)
+- Retruthy (reposty)
+- Cytaty
+- Albumy (wiele zdjec)
+- Automatyczne tlumaczenie na polski (lub inny jezyk)
 
-From PyPi:
+## Szybki start (Docker)
 
-```sh
-pip install truthbrush
-```
+### Wymagania
 
-From git:
+- Docker + Docker Compose
+- Konto Truth Social (login + haslo)
+- Bot Telegram (stworzony przez [@BotFather](https://t.me/BotFather))
 
-* To install it, run `pip install git+https://github.com/stanfordio/truthbrush.git`
-
-From source:
-
-* Clone the repository and run `pip3 install .`. Provided your `pip` is setup correctly, this will make `truthbrush` available both as a command and as a Python package.
-
-After installation, you will need to set your Truth Social username and password as environmental variables.
-
-`export TRUTHSOCIAL_USERNAME=foo`
-
-`export TRUTHSOCIAL_PASSWORD=bar`
-
-If you encounter login issues, you can instead extract your login token from the truth:auth Local Storage store and export it in `TRUTHSOCIAL_TOKEN`.
-
-You may also set these variables in a `.env` file in the directory from which you are running Truthbrush.
-
-## CLI Usage
-
-```text
-Usage: truthbrush [OPTIONS] COMMAND [ARGS]...
-
-Options:
-  --help     Show this message and exit.
-
-
-Commands:
-  search            Search for users, statuses or hashtags.
-  statuses          Pull a user's statuses.
-  suggestions       Pull the list of suggested users.
-  tags              Pull trendy tags.
-  trends            Pull trendy Truths.
-  ads               Pull ads.
-  user              Pull a user's metadata.
-  likes             Pull the list of users who liked a post
-  comments          Pull the list of oldest comments on a post
-  groupposts        Pull posts from a groups's timeline
-  grouptags         Pull trending group tags.
-  grouptrends       Pull trending groups.
-  groupsuggestions  Pull list of suggested groups.
-
-```
-
-**Search for users, statuses, groups, or hashtags**
+### Instalacja
 
 ```bash
-truthbrush search --searchtype [accounts|statuses|hashtags|groups] QUERY
+git clone https://github.com/popek1990/truthbrush_telegram.git
+cd truthbrush_telegram
+cp .env.example .env
+nano .env          # uzupelnij dane
+docker compose up -d
 ```
 
-**Pull all statuses (posts) from a user**
+### Konfiguracja `.env`
 
 ```bash
-truthbrush statuses HANDLE
+# Truth Social — login + haslo LUB token
+TRUTHSOCIAL_USERNAME=twoj_login
+TRUTHSOCIAL_PASSWORD=twoje_haslo
+# TRUTHSOCIAL_TOKEN=            # alternatywa zamiast loginu
+
+# Telegram (wymagane)
+TELEGRAM_BOT_TOKEN=7123456789:AAF...
+TELEGRAM_CHAT_ID=@nazwa_kanalu   # lub -100xxxxx dla prywatnego kanalu
+
+# Tlumaczenie (opcjonalne)
+TRANSLATE_TO=pl                   # pl, de, fr, es, ... lub zostaw puste
+
+# Proxy (opcjonalne, jesli geoblock)
+# http_proxy=socks5://127.0.0.1:1080
+# https_proxy=socks5://127.0.0.1:1080
 ```
 
-**Pull "People to Follow" (suggested) users**
+### Bot Telegram — konfiguracja
+
+1. Napisz do [@BotFather](https://t.me/BotFather) na Telegramie
+2. Wyslij `/newbot`, podaj nazwe i username
+3. Skopiuj token do `.env` (`TELEGRAM_BOT_TOKEN`)
+4. Dodaj bota jako **administratora** kanalu (z uprawnieniem "Wysylanie wiadomosci")
+
+**Chat ID kanalu:**
+- Publiczny kanal: `@nazwa_kanalu`
+- Prywatny kanal: przeslij wiadomosc z kanalu do [@getidsbot](https://t.me/getidsbot) — poda ID (zaczyna sie od `-100...`)
+
+### Monitorowanie wielu kont
+
+Edytuj `docker-compose.yml` — kazde konto to osobny serwis:
+
+```yaml
+services:
+  trump:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - monitor-data:/data
+    command: ["realDonaldTrump", "--interval", "60", "--state-file", "/data/truthbrush_state.json"]
+
+  inny_user:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - monitor-data:/data
+    command: ["inny_username", "--interval", "60", "--state-file", "/data/truthbrush_state.json"]
+
+volumes:
+  monitor-data:
+```
+
+### Przydatne komendy
 
 ```bash
-truthbrush suggestions
+docker compose logs -f           # logi na zywo
+docker compose ps                # status kontenerow
+docker compose restart           # restart
+docker compose down              # zatrzymaj
+./rebuild.sh                     # pelna przebudowa (git pull + reset state + build)
 ```
 
-**Pull trendy tags**
+## Uzycie bez Dockera
 
 ```bash
-truthbrush tags
+pip install .
+export TRUTHSOCIAL_USERNAME=login
+export TRUTHSOCIAL_PASSWORD=haslo
+export TELEGRAM_BOT_TOKEN=token
+export TELEGRAM_CHAT_ID=@kanal
+export TRANSLATE_TO=pl
+
+# Uruchomienie
+truthbrush monitor realDonaldTrump --interval 60
+
+# Test bez Telegrama
+truthbrush monitor realDonaldTrump --dry-run
 ```
 
-**Pull ads**
+## Oryginalne komendy truthbrush
+
+Fork zachowuje pelna kompatybilnosc z oryginalnym truthbrush:
 
 ```bash
-truthbrush ads
+truthbrush statuses HANDLE           # posty uzytkownika
+truthbrush user HANDLE               # metadane uzytkownika
+truthbrush search --searchtype accounts QUERY  # wyszukiwanie
+truthbrush trends                    # popularne posty
+truthbrush tags                      # popularne tagi
+truthbrush suggestions               # sugerowani uzytkownicy
+truthbrush likes POST TOP_NUM        # polubienia posta
+truthbrush comments POST TOP_NUM     # komentarze
+truthbrush groupposts GROUP_ID       # posty z grupy
+truthbrush grouptrends               # popularne grupy
+truthbrush grouptags                 # tagi grup
+truthbrush groupsuggestions          # sugerowane grupy
+truthbrush ads                       # reklamy
 ```
 
-**Pull all of a user's metadata**
+## Co zmieniono wzgledem oryginalu
 
-```bash
-truthbrush user HANDLE
+### Nowe funkcjonalnosci
+
+| Funkcja | Opis |
+|---------|------|
+| `truthbrush monitor` | Monitoring postow + przesylanie na Telegram |
+| Tlumaczenie | Automatyczne tlumaczenie postow (Google Translate, darmowe) |
+| Docker | Pelna konteneryzacja z healthcheck i restart policy |
+| `rebuild.sh` | Skrypt do czystej przebudowy |
+
+### Naprawione bugi w oryginalnym kodzie
+
+| Bug | Opis |
+|-----|------|
+| `_get()` crash | Brak `return None` po CurlError — powodowal `UnboundLocalError` |
+| `_get_paginated()` crash | Brak obslug bledu sieci — crashowal caly proces |
+| `pull_statuses()` crash | Brak sprawdzenia None po `_get()` i `lookup()` |
+| Token w logach | Token logowany w plaintext — wyciek danych |
+| `datetime.utcnow()` | Deprecated od Python 3.12 |
+| Niekompletny error | `"Cannot authenticate to ."` → `"Cannot authenticate to Truth Social."` |
+| `!= None` | Niezgodnosc z PEP 8 |
+
+### Nowe pliki
+
+```
+truthbrush/
+  telegram.py      # Telegram Bot API (urllib.request, zero nowych zaleznosci)
+  formatter.py     # Konwersja postow na format Telegram
+  state.py         # Persystencja stanu (atomowy zapis JSON)
+  monitor.py       # Petla monitoringu
+  translator.py    # Tlumaczenie postow (Google Translate)
+Dockerfile
+docker-compose.yml
+.env.example
+rebuild.sh
+plan.md            # Plan architektoniczny
+ulepszenia.md      # Szczegolowy opis zmian
 ```
 
-**Pull the list of users who liked a post**
+## Koszty
 
-```bash
-truthbrush likes POST --includeall TOP_NUM
-```
+**Wszystko darmowe:**
+- Truth Social API — bez oplat
+- Telegram Bot API — bez oplat
+- Google Translate (deep-translator) — bez oplat, bez klucza API
 
-**Pull the list of oldest comments on a post**
+## Wazne
 
-```bash
-truthbrush comments POST --includeall --onlyfirst TOP_NUM
-```
+- Interval ponizej 30 sekund moze spowodowac rate limit / ban
+- Truth Social moze blokowac ruch spoza USA — uzyj proxy (zmienna `http_proxy`)
+- Bot **musi byc adminem** kanalu Telegram zeby moc pisac
+- Przy pierwszym uruchomieniu zapisuje ostatni post i czeka na nowe — nie spamuje historia
 
-**Pull trending group tags**
+## Licencja
 
-```bash
-truthbrush grouptags
-```
+Apache 2.0 (zgodnie z oryginalnym repo)
 
-**Pull trending groups**
+## Oryginalne repo
 
-```bash
-truthbrush grouptrends
-```
-
-**Pull list of suggested groups**
-
-```bash
-truthbrush groupsuggestions
-```
-
-**Pull posts from a group's timeline**
-
-```bash
-truthbrush groupposts GROUP_ID
-```
-
-## Contributing
-
-Contributions are encouraged! For small bug fixes and minor improvements, feel free to just open a PR. For larger changes, please open an issue first so that other contributors can discuss your plan, avoid duplicated work, and ensure it aligns with the goals of the project. Be sure to also follow the [code of conduct](CODE_OF_CONDUCT.md). Thanks!
-
-Development setup (ensure you have [Poetry](https://python-poetry.org/) installed):
-
-```sh
-poetry install
-poetry shell
-truthbrush --help # will use your local copy of truthbrush
-```
-
-To run the tests:
-
-```sh
-pytest
-
-# optionally run tests with verbose logging outputs:
-pytest --log-cli-level=DEBUG -s
-```
-
-Please format your code with `black`:
-
-```sh
-black .
-```
+[stanfordio/truthbrush](https://github.com/stanfordio/truthbrush) — Stanford Internet Observatory
