@@ -19,4 +19,5 @@ docker images --filter "reference=truthbrush_telegram-*" -q | xargs -r docker rm
 echo "=== 5. Buduję i uruchamiam ==="
 docker compose up -d --build
 
-echo "=== Gotowe! Sprawdź logi: docker compose logs -f ==="
+echo "=== Gotowe! Pokazuję logi (Ctrl+C aby wyjść) ==="
+docker compose logs -f
