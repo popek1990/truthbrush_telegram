@@ -100,12 +100,22 @@ class TruthMonitor:
                 continue
 
             try:
+                sent = False
                 if formatted.has_media:
-                    self.sender.send_media_group(
-                        formatted.media_urls,
-                        caption=formatted.text,
-                    )
-                else:
+                    try:
+                        self.sender.send_media_group(
+                            formatted.media_urls,
+                            caption=formatted.text,
+                        )
+                        sent = True
+                    except TelegramSendError as e:
+                        if "wrong type" in str(e).lower():
+                            # Media type not supported (e.g. video URL) — fallback to text
+                            logger.warning(f"Media send failed for post {post['id']}, falling back to text: {e}")
+                        else:
+                            raise
+
+                if not sent:
                     self.sender.send_message(formatted.text)
 
                 self.state.save_last_seen_id(self.username, post["id"])
