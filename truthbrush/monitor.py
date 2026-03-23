@@ -109,7 +109,8 @@ class TruthMonitor:
                         )
                         sent = True
                     except TelegramSendError as e:
-                        if "wrong type" in str(e).lower():
+                        err = str(e).lower()
+                        if "wrong type" in err or "failed to get http url" in err:
                             # Media type not supported (e.g. video URL) — fallback to text
                             logger.warning(f"Media send failed for post {post['id']}, falling back to text: {e}")
                         else:
