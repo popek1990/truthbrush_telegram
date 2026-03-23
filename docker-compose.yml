@@ -5,7 +5,7 @@ services:
     env_file: .env
     volumes:
       - monitor-data:/data
-    command: ["realDonaldTrump", "--interval", "60", "--state-file", "/data/truthbrush_state.json"]
+    command: ["realDonaldTrump", "--interval", "5", "--state-file", "/data/truthbrush_state.json"]
     healthcheck:
       test: ["CMD", "python", "-c", "import json, sys; from datetime import datetime, timezone, timedelta; state=json.load(open('/data/truthbrush_state.json')); ts=datetime.fromisoformat(state.get('realDonaldTrump',{}).get('last_check','2000-01-01T00:00:00+00:00')); sys.exit(0 if datetime.now(timezone.utc)-ts < timedelta(minutes=5) else 1)"]
       interval: 60s
@@ -19,7 +19,7 @@ services:
     env_file: .env
     volumes:
       - monitor-data:/data
-    command: ["realamericasvoice", "--interval", "60", "--state-file", "/data/truthbrush_state.json"]
+    command: ["realamericasvoice", "--interval", "5", "--state-file", "/data/truthbrush_state.json"]
     healthcheck:
       test: ["CMD", "python", "-c", "import json, sys; from datetime import datetime, timezone, timedelta; state=json.load(open('/data/truthbrush_state.json')); ts=datetime.fromisoformat(state.get('realamericasvoice',{}).get('last_check','2000-01-01T00:00:00+00:00')); sys.exit(0 if datetime.now(timezone.utc)-ts < timedelta(minutes=5) else 1)"]
       interval: 60s
