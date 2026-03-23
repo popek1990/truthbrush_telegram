@@ -10,7 +10,7 @@ from truthbrush.api import Api, LoginErrorException
 from truthbrush.formatter import format_post
 from truthbrush.state import StateManager
 from truthbrush.telegram import TelegramSender, TelegramSendError
-from truthbrush.translator import PostTranslator
+from truthbrush.translator import PostTranslator  # noqa: F401 — used via constructor
 
 
 class TruthMonitor:
@@ -95,10 +95,7 @@ class TruthMonitor:
         logger.info(f"Found {len(posts)} new post(s) for @{self.username}")
 
         for post in posts:
-            formatted = format_post(post)
-
-            if self.translator:
-                formatted.text = self.translator.translate(formatted.text)
+            formatted = format_post(post, translator=self.translator)
 
             if self.dry_run:
                 logger.info(f"[DRY RUN] Post {post['id']}:\n{formatted.text}")

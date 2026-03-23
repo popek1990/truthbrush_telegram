@@ -3,6 +3,9 @@
 from deep_translator import GoogleTranslator
 from loguru import logger
 
+# Google Translate limit per request
+MAX_TRANSLATE_LENGTH = 4500
+
 
 class PostTranslator:
     """Translates text to a target language."""
@@ -12,15 +15,17 @@ class PostTranslator:
         self._translator = GoogleTranslator(source="auto", target=target_lang)
 
     def translate(self, text: str) -> str:
-        """Translate text, preserving HTML tags and links.
+        """Translate plain text content (no HTML, no URLs).
 
-        Returns original text if translation fails.
+        Returns original text if translation fails or text is empty.
         """
-        if not text:
+        if not text or not text.strip():
             return text
 
         try:
-            translated = self._translator.translate(text)
+            # Truncate to stay within Google Translate limits
+            truncated = text[:MAX_TRANSLATE_LENGTH] if len(text) > MAX_TRANSLATE_LENGTH else text
+            translated = self._translator.translate(truncated)
             if translated:
                 return translated
             return text

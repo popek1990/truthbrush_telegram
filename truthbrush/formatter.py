@@ -1,7 +1,13 @@
 """Formats Truth Social posts for Telegram messages."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from truthbrush.translator import PostTranslator
 
 
 BASE_URL = "https://truthsocial.com"
@@ -88,10 +94,18 @@ def _post_url(post: dict) -> str:
     return f"{BASE_URL}/@{username}/posts/{post_id}"
 
 
-def format_post(post: dict) -> FormattedPost:
+def _translate_content(text: str, translator: PostTranslator | None) -> str:
+    """Translate content if translator is available."""
+    if translator and text:
+        return translator.translate(text)
+    return text
+
+
+def format_post(post: dict, translator: PostTranslator | None = None) -> FormattedPost:
     """Convert a Truth Social post dict into a FormattedPost for Telegram.
 
     Handles regular posts, reblogs (retruths), and quote posts.
+    Only post content is translated — usernames, links, and HTML tags are preserved.
     """
     account = post.get("account", {})
     display_name = account.get("display_name", "")
@@ -110,6 +124,7 @@ def format_post(post: dict) -> FormattedPost:
         parts.append(f"🔁 <b>{display_name}</b> retruthed <b>{orig_name}</b> (@{orig_user})")
         parts.append("")
         content = strip_html(reblog.get("content", ""))
+        content = _translate_content(content, translator)
         if content:
             parts.append(content)
         media_urls = _extract_media(reblog)
@@ -118,6 +133,7 @@ def format_post(post: dict) -> FormattedPost:
         parts.append(f"<b>{display_name}</b> (@{username})")
         parts.append("")
         content = strip_html(post.get("content", ""))
+        content = _translate_content(content, translator)
         if content:
             parts.append(content)
         media_urls = _extract_media(post)
@@ -129,6 +145,7 @@ def format_post(post: dict) -> FormattedPost:
         quote_name = quote_account.get("display_name", "")
         quote_user = quote_account.get("username", "")
         quote_content = strip_html(quote.get("content", ""))
+        quote_content = _translate_content(quote_content, translator)
         parts.append("")
         parts.append(f"┃ <b>{quote_name}</b> (@{quote_user})")
         if quote_content:
