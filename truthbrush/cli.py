@@ -1,12 +1,16 @@
 """Defines the CLI for Truthbrush."""
 
 import json
+import os
 import click
 from datetime import date
 import datetime
 from .api import Api
 
 api = Api()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
 @click.group()
@@ -189,3 +193,68 @@ def comments(post: str, includeall: bool, onlyfirst: bool, top_num: int = 40):
     """Pull the top_num comments on a post (defaults to all users, including replies)."""
     for page in api.pull_comments(post, includeall, onlyfirst, top_num):
         print(page)
+
+
+@cli.command()
+@click.argument("username")
+@click.option(
+    "--interval",
+    "-i",
+    default=60,
+    help="Polling interval in seconds (default: 60)",
+    type=int,
+)
+@click.option(
+    "--state-file",
+    default=None,
+    help="Path to state file (default: ~/.truthbrush_state.json)",
+    type=str,
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Log posts without sending to Telegram",
+)
+def monitor(username: str, interval: int, state_file: str, dry_run: bool):
+    """Monitor a user's posts and forward new ones to Telegram.
+
+    Polls Truth Social every INTERVAL seconds for new posts from USERNAME
+    and sends them to the configured Telegram channel.
+
+    Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables
+    (unless --dry-run is used).
+    """
+    from .monitor import TruthMonitor
+    from .state import StateManager
+    from .telegram import TelegramSender
+
+    sender = None
+    if not dry_run:
+        if not TELEGRAM_BOT_TOKEN:
+            raise click.ClickException(
+                "TELEGRAM_BOT_TOKEN environment variable is required. "
+                "Use --dry-run to test without Telegram."
+            )
+        if not TELEGRAM_CHAT_ID:
+            raise click.ClickException(
+                "TELEGRAM_CHAT_ID environment variable is required. "
+                "Use --dry-run to test without Telegram."
+            )
+        sender = TelegramSender(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+
+    state_kwargs = {}
+    if state_file:
+        state_kwargs["state_file"] = state_file
+
+    state = StateManager(**state_kwargs)
+
+    truth_monitor = TruthMonitor(
+        username=username,
+        api=api,
+        sender=sender,
+        state=state,
+        interval=interval,
+        dry_run=dry_run,
+    )
+    truth_monitor.run()

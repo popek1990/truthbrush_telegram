@@ -95,7 +95,7 @@ class Api:
             if self.__password is None:
                 raise LoginErrorException("Password is missing.")
             self.auth_id = self.get_auth_id(self.__username, self.__password)
-            logger.warning(f"Using token {self.auth_id}")
+            logger.debug("Authentication token acquired")
 
     def _make_session(self):
         s = requests.Session()
@@ -114,7 +114,7 @@ class Api:
         if (
             self.ratelimit_remaining is not None and self.ratelimit_remaining <= 50
         ):  # We do 50 to be safe; their tracking is a bit stochastic... it can jump down quickly
-            now = datetime.utcnow().replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
             time_to_sleep = (
                 self.ratelimit_reset.replace(tzinfo=timezone.utc) - now
             ).total_seconds()
@@ -140,6 +140,7 @@ class Api:
             )
         except curl_cffi.curl.CurlError as e:
             logger.error(f"Curl error: {e}")
+            return None
 
         # Will also sleep
         self._check_ratelimit(resp)
@@ -159,16 +160,20 @@ class Api:
             next_link += f"?max_id={resume}"
 
         while next_link is not None:
-            resp = self._make_session().get(
-                next_link,
-                params=params,
-                proxies=proxies,
-                impersonate="chrome136",
-                headers={
-                    "Authorization": "Bearer " + self.auth_id,
-                    "User-Agent": USER_AGENT,
-                },
-            )
+            try:
+                resp = self._make_session().get(
+                    next_link,
+                    params=params,
+                    proxies=proxies,
+                    impersonate="chrome136",
+                    headers={
+                        "Authorization": "Bearer " + self.auth_id,
+                        "User-Agent": USER_AGENT,
+                    },
+                )
+            except curl_cffi.curl.CurlError as e:
+                logger.error(f"Curl error in paginated request: {e}")
+                return
             link_header = resp.headers.get("Link", "")
             next_link = None
             for link in link_header.split(","):
@@ -350,7 +355,7 @@ class Api:
         self.__check_login()
         timeline = []
         posts = self._get(f"/v1/timelines/group/{group_id}?limit={limit}")
-        while posts != None:
+        while posts is not None:
             timeline += posts
             limit = limit - len(posts)
             if limit <= 0:
@@ -456,7 +461,11 @@ class Api:
         """
 
         params = {}
-        user_id = self.lookup(username)["id"]
+        user_data = self.lookup(username)
+        if user_data is None:
+            logger.error(f"Could not look up user: {username}")
+            return
+        user_id = user_data["id"]
         page_counter = 0
         keep_going = True
         while keep_going:
@@ -476,6 +485,10 @@ class Api:
                 break
             except Exception as e:
                 logger.error(f"Misc. error while pulling statuses for {user_id}: {e}")
+                break
+
+            if result is None:
+                logger.error(f"No response while pulling statuses for {user_id}")
                 break
 
             if "error" in result:
@@ -571,7 +584,7 @@ class Api:
             sess_req.raise_for_status()
         except requests.RequestsError as e:
             logger.error(f"Failed login request: {str(e)}")
-            raise LoginErrorException("Cannot authenticate to .")
+            raise LoginErrorException("Cannot authenticate to Truth Social.")
 
         if not sess_req.json()["access_token"]:
             raise ValueError("Invalid truthsocial.com credentials provided!")
