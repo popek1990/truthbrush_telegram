@@ -1,6 +1,6 @@
 # truthbrush_telegram
 
-Fork projektu [stanfordio/truthbrush](https://github.com/stanfordio/truthbrush) rozszerzony o **automatyczny monitoring Truth Social i przekazywanie postów na Telegram**.
+Fork projektu [stanfordio/truthbrush](https://github.com/stanfordio/truthbrush) rozszerzony o **automatyczny monitoring Truth Social i przekazywanie postow na Telegram**.
 
 ## Co robi?
 
@@ -11,6 +11,8 @@ Monitoruje wybranych uzytkownikow Truth Social i automatycznie przesyla ich nowe
 - Cytaty
 - Albumy (wiele zdjec)
 - Automatyczne tlumaczenie na polski (lub inny jezyk)
+- Wybor silnika tlumaczenia: **OpenAI GPT-4o-mini** (lepsza jakosc) lub **Google Translate** (darmowe)
+- Sledzenie kosztow tlumaczenia (per model, dziennie i lacznie)
 
 ## Szybki start (Docker)
 
@@ -19,6 +21,7 @@ Monitoruje wybranych uzytkownikow Truth Social i automatycznie przesyla ich nowe
 - Docker + Docker Compose
 - Konto Truth Social (login + haslo)
 - Bot Telegram (stworzony przez [@BotFather](https://t.me/BotFather))
+- Opcjonalnie: klucz API OpenAI (dla lepszych tlumaczen)
 
 ### Instalacja
 
@@ -45,9 +48,33 @@ TELEGRAM_CHAT_ID=@nazwa_kanalu   # lub -100xxxxx dla prywatnego kanalu
 # Tlumaczenie (opcjonalne)
 TRANSLATE_TO=pl                   # pl, de, fr, es, ... lub zostaw puste
 
+# OpenAI (opcjonalne — lepsza jakosc tlumaczen)
+# Jesli ustawione, uzywa GPT-4o-mini zamiast Google Translate
+OPENAI_API_KEY=sk-...
+
 # Proxy (opcjonalne, jesli geoblock)
 # http_proxy=socks5://127.0.0.1:1080
 # https_proxy=socks5://127.0.0.1:1080
+```
+
+### Tlumaczenie — jak dziala?
+
+| Konfiguracja | Silnik | Koszt |
+|-------------|--------|-------|
+| `TRANSLATE_TO=pl` (bez klucza OpenAI) | Google Translate | Darmowe |
+| `TRANSLATE_TO=pl` + `OPENAI_API_KEY=sk-...` | GPT-4o-mini | ~$0.01/dzien |
+| Brak `TRANSLATE_TO` | Brak tlumaczenia | $0 |
+
+Tlumaczona jest **tylko tresc posta** — usernames, linki i formatowanie pozostaja nietknete.
+
+Koszty sa logowane przy kazdym tlumaczeniu:
+```
+Translation cost: $0.000123 | gpt-4o-mini 85in/92out | daily: $0.0012 | total: $0.0045
+```
+
+Pelna historia kosztow zapisywana jest w `/data/usage.json`:
+```bash
+docker compose exec trump cat /data/usage.json
 ```
 
 ### Bot Telegram — konfiguracja
@@ -73,7 +100,7 @@ services:
     env_file: .env
     volumes:
       - monitor-data:/data
-    command: ["realDonaldTrump", "--interval", "60", "--state-file", "/data/truthbrush_state.json"]
+    command: ["realDonaldTrump", "--interval", "5", "--state-file", "/data/truthbrush_state.json"]
 
   inny_user:
     build: .
@@ -81,7 +108,7 @@ services:
     env_file: .env
     volumes:
       - monitor-data:/data
-    command: ["inny_username", "--interval", "60", "--state-file", "/data/truthbrush_state.json"]
+    command: ["inny_username", "--interval", "5", "--state-file", "/data/truthbrush_state.json"]
 
 volumes:
   monitor-data:
@@ -95,6 +122,9 @@ docker compose ps                # status kontenerow
 docker compose restart           # restart
 docker compose down              # zatrzymaj
 ./rebuild.sh                     # pelna przebudowa (git pull + reset state + build)
+
+# Sprawdzenie kosztow tlumaczenia
+docker compose exec trump cat /data/usage.json
 ```
 
 ## Uzycie bez Dockera
@@ -106,9 +136,10 @@ export TRUTHSOCIAL_PASSWORD=haslo
 export TELEGRAM_BOT_TOKEN=token
 export TELEGRAM_CHAT_ID=@kanal
 export TRANSLATE_TO=pl
+export OPENAI_API_KEY=sk-...     # opcjonalne
 
 # Uruchomienie
-truthbrush monitor realDonaldTrump --interval 60
+truthbrush monitor realDonaldTrump --interval 5
 
 # Test bez Telegrama
 truthbrush monitor realDonaldTrump --dry-run
@@ -141,7 +172,9 @@ truthbrush ads                       # reklamy
 | Funkcja | Opis |
 |---------|------|
 | `truthbrush monitor` | Monitoring postow + przesylanie na Telegram |
-| Tlumaczenie | Automatyczne tlumaczenie postow (Google Translate, darmowe) |
+| Tlumaczenie OpenAI | GPT-4o-mini — naturalne, kontekstowe tlumaczenia |
+| Tlumaczenie Google | Darmowy fallback gdy brak klucza OpenAI |
+| Sledzenie kosztow | Koszty tlumaczenia per model, dziennie i lacznie (`/data/usage.json`) |
 | Docker | Pelna konteneryzacja z healthcheck i restart policy |
 | `rebuild.sh` | Skrypt do czystej przebudowy |
 
@@ -150,7 +183,7 @@ truthbrush ads                       # reklamy
 | Bug | Opis |
 |-----|------|
 | `_get()` crash | Brak `return None` po CurlError — powodowal `UnboundLocalError` |
-| `_get_paginated()` crash | Brak obslug bledu sieci — crashowal caly proces |
+| `_get_paginated()` crash | Brak obslugi bledu sieci — crashowal caly proces |
 | `pull_statuses()` crash | Brak sprawdzenia None po `_get()` i `lookup()` |
 | Token w logach | Token logowany w plaintext — wyciek danych |
 | `datetime.utcnow()` | Deprecated od Python 3.12 |
@@ -161,29 +194,33 @@ truthbrush ads                       # reklamy
 
 ```
 truthbrush/
-  telegram.py      # Telegram Bot API (urllib.request, zero nowych zaleznosci)
+  telegram.py      # Telegram Bot API (urllib.request)
   formatter.py     # Konwersja postow na format Telegram
   state.py         # Persystencja stanu (atomowy zapis JSON)
   monitor.py       # Petla monitoringu
-  translator.py    # Tlumaczenie postow (Google Translate)
+  translator.py    # Tlumaczenie (OpenAI GPT / Google Translate + usage tracking)
 Dockerfile
 docker-compose.yml
 .env.example
 rebuild.sh
 plan.md            # Plan architektoniczny
 ulepszenia.md      # Szczegolowy opis zmian
+CLAUDE.md          # Kontekst projektu dla AI
 ```
 
 ## Koszty
 
-**Wszystko darmowe:**
-- Truth Social API — bez oplat
-- Telegram Bot API — bez oplat
-- Google Translate (deep-translator) — bez oplat, bez klucza API
+| Usluga | Koszt |
+|--------|-------|
+| Truth Social API | Darmowe |
+| Telegram Bot API | Darmowe |
+| Google Translate | Darmowe |
+| OpenAI GPT-4o-mini | ~$0.01/dzien (~50 postow) |
 
 ## Wazne
 
-- Interval ponizej 30 sekund moze spowodowac rate limit / ban
+- Interval ponizej 3 sekund moze spowodowac rate limit / ban
+- Przy 2+ kontach bezpieczny interval to 5 sekund
 - Truth Social moze blokowac ruch spoza USA — uzyj proxy (zmienna `http_proxy`)
 - Bot **musi byc adminem** kanalu Telegram zeby moc pisac
 - Przy pierwszym uruchomieniu zapisuje ostatni post i czeka na nowe — nie spamuje historia
