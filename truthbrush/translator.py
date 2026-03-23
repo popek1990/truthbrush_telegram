@@ -68,7 +68,7 @@ class UsageTracker:
         self._data["daily"][today][model]["cost_usd"] = round(self._data["daily"][today][model]["cost_usd"] + cost, 6)
 
         self._save()
-        logger.debug(f"Usage: {model} +{input_tokens}in/{output_tokens}out = ${cost:.6f} (total: ${self._data['total'][model]['cost_usd']:.4f})")
+        logger.info(f"Translation cost: ${cost:.6f} | {model} {input_tokens}in/{output_tokens}out | daily: ${self._data['daily'][today][model]['cost_usd']:.4f} | total: ${self._data['total'][model]['cost_usd']:.4f}")
 
 
 class PostTranslator:
