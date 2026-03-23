@@ -10,6 +10,7 @@ from truthbrush.api import Api, LoginErrorException
 from truthbrush.formatter import format_post
 from truthbrush.state import StateManager
 from truthbrush.telegram import TelegramSender, TelegramSendError
+from truthbrush.translator import PostTranslator
 
 
 class TruthMonitor:
@@ -23,6 +24,7 @@ class TruthMonitor:
         state: StateManager,
         interval: int = 60,
         dry_run: bool = False,
+        translator: PostTranslator | None = None,
     ):
         self.username = username
         self.api = api
@@ -30,6 +32,7 @@ class TruthMonitor:
         self.state = state
         self.interval = interval
         self.dry_run = dry_run
+        self.translator = translator
         self._running = True
 
     def _handle_signal(self, signum: int, frame) -> None:
@@ -93,6 +96,9 @@ class TruthMonitor:
 
         for post in posts:
             formatted = format_post(post)
+
+            if self.translator:
+                formatted.text = self.translator.translate(formatted.text)
 
             if self.dry_run:
                 logger.info(f"[DRY RUN] Post {post['id']}:\n{formatted.text}")

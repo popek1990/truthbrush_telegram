@@ -17,6 +17,7 @@ python-dotenv = "^1.0.1"
 
 python-dateutil = "^2.9.0"
 curl_cffi = "^0.14.0"
+deep-translator = "^1.11.4"
 
 [tool.poetry.group.dev.dependencies]
 black = "^26.1.0"

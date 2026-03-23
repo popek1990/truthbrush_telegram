@@ -11,6 +11,7 @@ api = Api()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TRANSLATE_TO = os.getenv("TRANSLATE_TO")
 
 
 @click.group()
@@ -228,6 +229,7 @@ def monitor(username: str, interval: int, state_file: str, dry_run: bool):
     from .monitor import TruthMonitor
     from .state import StateManager
     from .telegram import TelegramSender
+    from .translator import PostTranslator
 
     sender = None
     if not dry_run:
@@ -249,6 +251,8 @@ def monitor(username: str, interval: int, state_file: str, dry_run: bool):
 
     state = StateManager(**state_kwargs)
 
+    translator = PostTranslator(TRANSLATE_TO) if TRANSLATE_TO else None
+
     truth_monitor = TruthMonitor(
         username=username,
         api=api,
@@ -256,5 +260,6 @@ def monitor(username: str, interval: int, state_file: str, dry_run: bool):
         state=state,
         interval=interval,
         dry_run=dry_run,
+        translator=translator,
     )
     truth_monitor.run()
