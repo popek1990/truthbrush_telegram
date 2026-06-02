@@ -82,3 +82,20 @@ class StateManager:
         if entry is None:
             return None
         return entry.get("last_check")
+
+    def get_last_check_datetime(self, username: str) -> Optional[datetime]:
+        """Get last_check parsed as a timezone-aware UTC datetime."""
+        last_check = self.get_last_check(username)
+        if not last_check:
+            return None
+
+        try:
+            parsed = datetime.fromisoformat(last_check.replace("Z", "+00:00"))
+        except ValueError:
+            logger.warning(f"Invalid last_check for {username}: {last_check!r}")
+            return None
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        return parsed.astimezone(timezone.utc)

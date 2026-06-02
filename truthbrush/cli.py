@@ -14,6 +14,21 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TRANSLATE_TO = os.getenv("TRANSLATE_TO")
 
 
+def _option_or_env_int(option_value: int | None, env_name: str, default: int) -> int:
+    """Return a CLI integer option, env integer, or fallback default."""
+    if option_value is not None:
+        return option_value
+
+    env_value = os.getenv(env_name)
+    if env_value is None or env_value == "":
+        return default
+
+    try:
+        return int(env_value)
+    except ValueError as e:
+        raise click.ClickException(f"{env_name} must be an integer") from e
+
+
 @click.group()
 def cli():
     """This is an API client for Truth Social."""
@@ -217,7 +232,32 @@ def comments(post: str, includeall: bool, onlyfirst: bool, top_num: int = 40):
     default=False,
     help="Log posts without sending to Telegram",
 )
-def monitor(username: str, interval: int, state_file: str, dry_run: bool):
+@click.option(
+    "--max-backfill-age",
+    default=None,
+    type=int,
+    help=(
+        "Skip backlog if last successful check is older than this many seconds "
+        "(default: env MAX_BACKFILL_AGE_SECONDS or 21600; 0 disables)"
+    ),
+)
+@click.option(
+    "--max-posts-per-poll",
+    default=None,
+    type=int,
+    help=(
+        "Skip a batch if one poll returns more posts than this "
+        "(default: env MAX_POSTS_PER_POLL or 20; 0 disables)"
+    ),
+)
+def monitor(
+    username: str,
+    interval: int,
+    state_file: str,
+    dry_run: bool,
+    max_backfill_age: int | None,
+    max_posts_per_poll: int | None,
+):
     """Monitor a user's posts and forward new ones to Telegram.
 
     Polls Truth Social every INTERVAL seconds for new posts from USERNAME
@@ -227,6 +267,8 @@ def monitor(username: str, interval: int, state_file: str, dry_run: bool):
     (unless --dry-run is used).
     """
     from .monitor import TruthMonitor
+    from .monitor import DEFAULT_MAX_BACKFILL_AGE_SECONDS
+    from .monitor import DEFAULT_MAX_POSTS_PER_POLL
     from .state import StateManager
     from .telegram import TelegramSender
     from .translator import PostTranslator
@@ -252,6 +294,16 @@ def monitor(username: str, interval: int, state_file: str, dry_run: bool):
     state = StateManager(**state_kwargs)
 
     translator = PostTranslator(TRANSLATE_TO) if TRANSLATE_TO else None
+    max_backfill_age = _option_or_env_int(
+        max_backfill_age,
+        "MAX_BACKFILL_AGE_SECONDS",
+        DEFAULT_MAX_BACKFILL_AGE_SECONDS,
+    )
+    max_posts_per_poll = _option_or_env_int(
+        max_posts_per_poll,
+        "MAX_POSTS_PER_POLL",
+        DEFAULT_MAX_POSTS_PER_POLL,
+    )
 
     truth_monitor = TruthMonitor(
         username=username,
@@ -261,5 +313,7 @@ def monitor(username: str, interval: int, state_file: str, dry_run: bool):
         interval=interval,
         dry_run=dry_run,
         translator=translator,
+        max_backfill_age_seconds=max_backfill_age,
+        max_posts_per_poll=max_posts_per_poll,
     )
     truth_monitor.run()

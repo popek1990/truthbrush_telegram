@@ -1,7 +1,7 @@
 """Truth Social monitor — polls for new posts and forwards them to Telegram."""
 
 import signal
-import sys
+from datetime import datetime, timedelta, timezone
 from time import sleep
 
 from loguru import logger
@@ -11,6 +11,10 @@ from truthbrush.formatter import format_post
 from truthbrush.state import StateManager
 from truthbrush.telegram import TelegramSender, TelegramSendError
 from truthbrush.translator import PostTranslator  # noqa: F401 — used via constructor
+
+DEFAULT_MAX_BACKFILL_AGE_SECONDS = 6 * 60 * 60
+DEFAULT_MAX_POSTS_PER_POLL = 20
+INITIAL_POST_FETCH_LIMIT = 5
 
 
 class TruthMonitor:
@@ -25,6 +29,8 @@ class TruthMonitor:
         interval: int = 60,
         dry_run: bool = False,
         translator: PostTranslator | None = None,
+        max_backfill_age_seconds: int | None = DEFAULT_MAX_BACKFILL_AGE_SECONDS,
+        max_posts_per_poll: int | None = DEFAULT_MAX_POSTS_PER_POLL,
     ):
         self.username = username
         self.api = api
@@ -33,6 +39,8 @@ class TruthMonitor:
         self.interval = interval
         self.dry_run = dry_run
         self.translator = translator
+        self.max_backfill_age_seconds = max_backfill_age_seconds
+        self.max_posts_per_poll = max_posts_per_poll
         self._running = True
 
     def _handle_signal(self, signum: int, frame) -> None:
@@ -44,38 +52,126 @@ class TruthMonitor:
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
 
-    def _initialize(self) -> None:
-        """First run: save the latest post ID without sending to Telegram."""
-        last_seen_id = self.state.get_last_seen_id(self.username)
-        if last_seen_id is not None:
-            logger.info(f"Resuming from post ID {last_seen_id}")
-            return
+    def _backfill_protection_enabled(self) -> bool:
+        return (
+            self.max_backfill_age_seconds is not None
+            and self.max_backfill_age_seconds > 0
+        )
 
-        logger.info(f"First run for @{self.username}, fetching latest post ID...")
+    def _max_posts_protection_enabled(self) -> bool:
+        return self.max_posts_per_poll is not None and self.max_posts_per_poll > 0
+
+    def _format_age(self, age: timedelta) -> str:
+        seconds = max(0, int(age.total_seconds()))
+        days, remainder = divmod(seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        if seconds or not parts:
+            parts.append(f"{seconds}s")
+        return " ".join(parts)
+
+    def _stale_state_reason(self) -> str | None:
+        if not self._backfill_protection_enabled():
+            return None
+
+        last_check = self.state.get_last_check_datetime(self.username)
+        if last_check is None:
+            return "missing or invalid last_check"
+
+        age = datetime.now(timezone.utc) - last_check
+        max_age = timedelta(seconds=self.max_backfill_age_seconds)
+        if age > max_age:
+            return (
+                f"last_check is {self._format_age(age)} old "
+                f"(limit {self._format_age(max_age)})"
+            )
+
+        return None
+
+    def _fetch_latest_posts(self, limit: int = INITIAL_POST_FETCH_LIMIT) -> list[dict]:
+        posts = []
+        for post in self.api.pull_statuses(self.username):
+            posts.append(post)
+            if len(posts) >= limit:
+                break
+        return posts
+
+    def _newest_post_id(self, posts: list[dict]) -> str:
+        return max(posts, key=lambda p: int(p["id"]))["id"]
+
+    def _reset_to_latest(self, reason: str) -> None:
+        """Move state to the latest post without sending historical posts."""
+        logger.warning(f"Resetting @{self.username} to latest post: {reason}")
         try:
-            # Only grab the first few posts (one API page), not the entire history
-            posts = []
-            for post in self.api.pull_statuses(self.username):
-                posts.append(post)
-                if len(posts) >= 5:
-                    break
+            posts = self._fetch_latest_posts()
+        except LoginErrorException:
+            logger.warning("Auth failed during reset, forcing re-authentication...")
+            self.api.auth_id = None
+            return
         except Exception as e:
-            logger.error(f"Failed to fetch initial posts: {e}")
+            logger.error(f"Failed to fetch latest post for reset: {e}")
             return
 
         if posts:
-            newest_id = max(posts, key=lambda p: int(p["id"]))["id"]
+            newest_id = self._newest_post_id(posts)
             self.state.save_last_seen_id(self.username, newest_id)
-            logger.info(f"Initialized: will monitor new posts after ID {newest_id}")
+            logger.warning(
+                f"Skipped backlog for @{self.username}; monitoring new posts after ID {newest_id}"
+            )
         else:
-            logger.warning(f"No posts found for @{self.username}")
+            self.state.update_last_check(self.username)
+            logger.warning(f"No posts found for @{self.username} during reset")
+
+    def _collect_new_posts(self, last_seen_id: str | None) -> tuple[list[dict], bool]:
+        posts = []
+        overflow = False
+        for post in self.api.pull_statuses(self.username, since_id=last_seen_id):
+            posts.append(post)
+            if (
+                self._max_posts_protection_enabled()
+                and len(posts) > self.max_posts_per_poll
+            ):
+                overflow = True
+                break
+        return posts, overflow
+
+    def _skip_large_batch(self, posts: list[dict]) -> None:
+        newest_id = self._newest_post_id(posts)
+        self.state.save_last_seen_id(self.username, newest_id)
+        logger.warning(
+            f"Skipped {len(posts)} posts for @{self.username}; "
+            f"batch exceeded max_posts_per_poll={self.max_posts_per_poll}. "
+            f"Monitoring new posts after ID {newest_id}"
+        )
+
+    def _initialize(self) -> None:
+        """Initialize state and avoid replaying stale history."""
+        last_seen_id = self.state.get_last_seen_id(self.username)
+        if last_seen_id is None:
+            self._reset_to_latest("first run")
+            return
+
+        stale_reason = self._stale_state_reason()
+        if stale_reason:
+            self._reset_to_latest(f"stale state ({stale_reason})")
+            return
+
+        logger.info(f"Resuming from post ID {last_seen_id}")
 
     def _poll(self) -> None:
         """Single poll cycle: fetch new posts, format, and send."""
         last_seen_id = self.state.get_last_seen_id(self.username)
 
         try:
-            posts = list(self.api.pull_statuses(self.username, since_id=last_seen_id))
+            posts, overflow = self._collect_new_posts(last_seen_id)
         except LoginErrorException:
             logger.warning("Auth failed, forcing re-authentication...")
             self.api.auth_id = None
@@ -88,6 +184,10 @@ class TruthMonitor:
 
         if not posts:
             logger.debug(f"No new posts for @{self.username}")
+            return
+
+        if overflow:
+            self._skip_large_batch(posts)
             return
 
         # Sort chronologically (oldest first) so Telegram receives them in order
