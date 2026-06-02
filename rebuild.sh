@@ -1,8 +1,18 @@
 #!/bin/bash
-# rebuild.sh — przebudowa truthbrush_telegram bez duplikatów
-# Użycie: cd /opt/truthbrush_telegram && ./rebuild.sh
+# rebuild.sh — bezpieczna przebudowa truthbrush_telegram
+# Użycie:
+#   ./rebuild.sh            # rebuild bez kasowania state
+#   ./rebuild.sh --reset-state  # świadomy reset state
 
 set -e
+
+RESET_STATE=0
+if [ "${1:-}" = "--reset-state" ]; then
+  RESET_STATE=1
+elif [ "${1:-}" != "" ]; then
+  echo "Użycie: $0 [--reset-state]"
+  exit 2
+fi
 
 echo "=== 1. Zatrzymuję kontenery ==="
 docker compose down --remove-orphans
@@ -10,8 +20,12 @@ docker compose down --remove-orphans
 echo "=== 2. Pobieram najnowszy kod ==="
 git pull
 
-echo "=== 3. Czyszczę state (zapobieganie duplikatom) ==="
-docker run --rm -v truthbrush_telegram_monitor-data:/data alpine rm -f /data/truthbrush_state.json
+if [ "$RESET_STATE" -eq 1 ]; then
+  echo "=== 3. Resetuję state na żądanie ==="
+  docker run --rm -v truthbrush_telegram_monitor-data:/data alpine rm -f /data/truthbrush_state.json
+else
+  echo "=== 3. Zachowuję state ==="
+fi
 
 echo "=== 4. Usuwam stare obrazy tego projektu ==="
 docker images --filter "reference=truthbrush_telegram-*" -q | xargs -r docker rmi -f 2>/dev/null || true

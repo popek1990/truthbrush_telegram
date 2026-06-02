@@ -101,9 +101,9 @@ Forwarder chroni Telegram i koszty GPT po dluzszej przerwie serwera.
 - Publiczny kanal: `@nazwa_kanalu`
 - Prywatny kanal: przeslij wiadomosc z kanalu do [@getidsbot](https://t.me/getidsbot) — poda ID (zaczyna sie od `-100...`)
 
-### Monitorowanie wielu kont
+### Konfiguracja monitorowanego konta
 
-Edytuj `docker-compose.yml` — kazde konto to osobny serwis:
+Edytuj `docker-compose.yml`, jesli chcesz zmienic monitorowany username:
 
 ```yaml
 services:
@@ -114,14 +114,6 @@ services:
     volumes:
       - monitor-data:/data
     command: ["realDonaldTrump", "--interval", "5", "--state-file", "/data/truthbrush_state.json", "--max-backfill-age", "21600", "--max-posts-per-poll", "20"]
-
-  inny_user:
-    build: .
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - monitor-data:/data
-    command: ["inny_username", "--interval", "5", "--state-file", "/data/truthbrush_state.json", "--max-backfill-age", "21600", "--max-posts-per-poll", "20"]
 
 volumes:
   monitor-data:
@@ -134,7 +126,8 @@ docker compose logs -f           # logi na zywo
 docker compose ps                # status kontenerow
 docker compose restart           # restart
 docker compose down              # zatrzymaj
-./rebuild.sh                     # pelna przebudowa (git pull + reset state + build)
+./rebuild.sh                     # bezpieczna przebudowa (git pull + build, state zostaje)
+./rebuild.sh --reset-state       # swiadomy reset state + rebuild
 
 # Sprawdzenie kosztow tlumaczenia
 docker compose exec trump cat /data/usage.json
