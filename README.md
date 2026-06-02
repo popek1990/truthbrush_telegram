@@ -212,7 +212,6 @@ docker-compose.yml
 .dockerignore      # Sekrety i lokalne pliki nie trafiaja do kontekstu builda
 .env.example
 rebuild.sh
-problem.md         # Opis problemu backlogu i plan naprawy
 ```
 
 ## Bezpieczenstwo sekretow
