@@ -2,10 +2,16 @@
 
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from loguru import logger
+
+# Keep a single translation from blocking the poll loop for minutes.
+OPENAI_TIMEOUT_SECONDS = 30
+OPENAI_MAX_RETRIES = 2
+OPENAI_MAX_TOKENS = 2000
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 USAGE_FILE = os.getenv("USAGE_FILE", "/data/usage.json")
@@ -37,12 +43,25 @@ class UsageTracker:
         return {"total": {}, "daily": {}}
 
     def _save(self) -> None:
+        """Atomically write usage data (write tmp → os.replace), like state.py."""
         self.usage_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = None
         try:
-            with open(self.usage_file, "w") as f:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=self.usage_file.parent,
+                prefix=".usage_",
+                suffix=".tmp",
+            )
+            with os.fdopen(fd, "w") as f:
                 json.dump(self._data, f, indent=2)
+            os.replace(tmp_path, self.usage_file)
         except OSError as e:
             logger.warning(f"Failed to save usage data: {e}")
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def record(self, model: str, input_tokens: int, output_tokens: int) -> None:
         pricing = MODEL_PRICING.get(model, {"input": 0, "output": 0})
@@ -86,7 +105,11 @@ class PostTranslator:
 
         if OPENAI_API_KEY:
             from openai import OpenAI
-            self._openai_client = OpenAI(api_key=OPENAI_API_KEY)
+            self._openai_client = OpenAI(
+                api_key=OPENAI_API_KEY,
+                timeout=OPENAI_TIMEOUT_SECONDS,
+                max_retries=OPENAI_MAX_RETRIES,
+            )
             self._model = "gpt-4o-mini"
             logger.info(f"Translator: OpenAI {self._model} → {target_lang}")
         else:
@@ -110,11 +133,20 @@ class PostTranslator:
                 {"role": "user", "content": text},
             ],
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=OPENAI_MAX_TOKENS,
         )
         usage = response.usage
         self._usage.record(self._model, usage.prompt_tokens, usage.completion_tokens)
-        return response.choices[0].message.content.strip()
+
+        choice = response.choices[0]
+        # If the model hit the token cap the translation is cut off — returning a
+        # truncated translation is worse than the original, so fall back to it.
+        if choice.finish_reason == "length":
+            logger.warning(
+                "Translation hit the token limit and was truncated; using original text"
+            )
+            raise ValueError("translation truncated (finish_reason=length)")
+        return choice.message.content.strip()
 
     def _translate_google(self, text: str) -> str:
         """Translate using Google Translate (free fallback)."""

@@ -58,6 +58,13 @@ class TokenInvalidException(LoginErrorException):
     pass
 
 
+class FetchError(Exception):
+    """Raised when a fetch fails for a non-auth reason (network/Cloudflare/5xx/
+    unparseable body), so the monitor can tell a real failure apart from an
+    honestly empty result. Only raised when ``pull_statuses(raise_on_error=True)``.
+    """
+
+
 class RateLimitException(Exception):
     """Raised when the API returns HTTP 429.
 
@@ -177,12 +184,18 @@ class Api:
             )
 
         if (
-            self.ratelimit_remaining is not None and self.ratelimit_remaining <= 50
+            self.ratelimit_remaining is not None
+            and self.ratelimit_remaining <= 50
+            # Only sleep until reset if we actually have a reset timestamp; a
+            # `remaining` header without a `reset` header must not crash here.
+            and self.ratelimit_reset is not None
         ):  # We do 50 to be safe; their tracking is a bit stochastic... it can jump down quickly
             now = datetime.now(timezone.utc)
             time_to_sleep = (
                 self.ratelimit_reset.replace(tzinfo=timezone.utc) - now
             ).total_seconds()
+            # Cap a single sleep so a bogus/far-future reset can't stall the loop.
+            time_to_sleep = min(time_to_sleep, 300)
             logger.warning(
                 f"Approaching rate limit; sleeping for {time_to_sleep} seconds..."
             )
@@ -518,12 +531,19 @@ class Api:
         created_after: datetime = None,
         since_id=None,
         pinned=False,
+        raise_on_error=False,
     ) -> List[dict]:
         """Pull the given user's statuses.
 
         Params:
             created_after : timezone aware datetime object
             since_id : number or string
+            raise_on_error : when True, raise ``FetchError`` on a failed fetch
+                (lookup/response is ``None`` or an error payload) instead of
+                silently yielding nothing. Off by default so the other CLI
+                commands keep their existing behaviour; the monitor turns it on
+                so a Cloudflare/5xx/network failure is not mistaken for
+                "no new posts".
 
         Returns a list of posts in reverse chronological order,
             or an empty list if not found.
@@ -533,6 +553,8 @@ class Api:
         user_data = self.lookup(username)
         if user_data is None:
             logger.error(f"Could not look up user: {username}")
+            if raise_on_error:
+                raise FetchError(f"Could not look up user: {username}")
             return
         user_id = user_data["id"]
         page_counter = 0
@@ -557,16 +579,26 @@ class Api:
                 raise
             except Exception as e:
                 logger.error(f"Misc. error while pulling statuses for {user_id}: {e}")
+                if raise_on_error:
+                    raise FetchError(
+                        f"Error while pulling statuses for {user_id}: {e}"
+                    ) from e
                 break
 
             if result is None:
                 logger.error(f"No response while pulling statuses for {user_id}")
+                if raise_on_error:
+                    raise FetchError(f"No response while pulling statuses for {user_id}")
                 break
 
             if "error" in result:
                 logger.error(
                     f"API returned an error while pulling user #{user_id}'s statuses: {result}"
                 )
+                if raise_on_error:
+                    raise FetchError(
+                        f"API error while pulling statuses for {user_id}: {result}"
+                    )
                 break
 
             if len(result) == 0:

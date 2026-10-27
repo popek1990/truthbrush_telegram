@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING
@@ -12,21 +13,42 @@ if TYPE_CHECKING:
 
 BASE_URL = "https://truthsocial.com"
 
+# Media kinds we distinguish. Anything else is treated as "unknown" and linked
+# in the text instead of being sent as a Telegram media attachment.
+MEDIA_IMAGE = "image"
+MEDIA_VIDEO = "video"
+MEDIA_GIFV = "gifv"
+MEDIA_UNKNOWN = "unknown"
+
+SENDABLE_MEDIA_KINDS = (MEDIA_IMAGE, MEDIA_VIDEO, MEDIA_GIFV)
+
+
+@dataclass(frozen=True)
+class MediaItem:
+    """A single media attachment with its Truth Social type preserved."""
+
+    url: str
+    kind: str
+
 
 @dataclass
 class FormattedPost:
-    """A Truth Social post formatted for Telegram."""
+    """A Truth Social post formatted for Telegram.
+
+    ``text`` is the HTML-safe body (dynamic fields escaped, our ``<b>`` tags and
+    link intact). ``plain_text`` is the same content without HTML — used for the
+    plain-text fallback when Telegram rejects the HTML parse. ``media`` holds only
+    the attachments we can actually send (image/video/gifv); unknown attachments
+    are already linked inside the text.
+    """
 
     text: str
-    media_urls: list[str] = field(default_factory=list)
+    plain_text: str = ""
+    media: list[MediaItem] = field(default_factory=list)
 
     @property
     def has_media(self) -> bool:
-        return len(self.media_urls) > 0
-
-    @property
-    def is_album(self) -> bool:
-        return len(self.media_urls) > 1
+        return len(self.media) > 0
 
 
 class _HTMLStripper(HTMLParser):
@@ -68,23 +90,36 @@ class _HTMLStripper(HTMLParser):
         return "".join(self._parts).strip()
 
 
-def strip_html(html: str) -> str:
-    """Strip HTML tags, converting <br> and <p> to newlines."""
-    if not html:
+def strip_html(html_text: str) -> str:
+    """Strip HTML tags, converting <br> and <p> to newlines.
+
+    Note: HTMLParser decodes entities (``&amp;`` → ``&``, ``&lt;`` → ``<``), so the
+    returned text is *raw* and must be re-escaped before going into an HTML message.
+    """
+    if not html_text:
         return ""
     stripper = _HTMLStripper()
-    stripper.feed(html)
+    stripper.feed(html_text)
     return stripper.get_text()
 
 
-def _extract_media(post: dict) -> list[str]:
-    """Extract media URLs from a post's attachments."""
-    urls = []
+def _esc(text: str | None) -> str:
+    """Escape text for Telegram HTML parse mode (``&`` ``<`` ``>``)."""
+    return html.escape(text or "", quote=False)
+
+
+def _extract_media(post: dict) -> list[MediaItem]:
+    """Extract media attachments, preserving each attachment's type."""
+    items: list[MediaItem] = []
     for attachment in post.get("media_attachments", []):
         url = attachment.get("url") or attachment.get("preview_url")
-        if url:
-            urls.append(url)
-    return urls
+        if not url:
+            continue
+        kind = attachment.get("type") or MEDIA_UNKNOWN
+        if kind not in SENDABLE_MEDIA_KINDS:
+            kind = MEDIA_UNKNOWN
+        items.append(MediaItem(url=url, kind=kind))
+    return items
 
 
 def _post_url(post: dict) -> str:
@@ -106,6 +141,8 @@ def format_post(post: dict, translator: PostTranslator | None = None) -> Formatt
 
     Handles regular posts, reblogs (retruths), and quote posts.
     Only post content is translated — usernames, links, and HTML tags are preserved.
+    Dynamic fields are HTML-escaped so a literal ``<`` or ``&`` in the content or a
+    display name cannot break Telegram's HTML parser.
     """
     account = post.get("account", {})
     display_name = account.get("display_name", "")
@@ -114,29 +151,35 @@ def format_post(post: dict, translator: PostTranslator | None = None) -> Formatt
     reblog = post.get("reblog")
     quote = post.get("quote")
 
-    parts: list[str] = []
+    html_parts: list[str] = []
+    plain_parts: list[str] = []
+
+    def add(html_line: str = "", plain_line: str | None = None) -> None:
+        html_parts.append(html_line)
+        plain_parts.append(html_line if plain_line is None else plain_line)
 
     if reblog:
         # Retruth (repost)
         orig_account = reblog.get("account", {})
         orig_name = orig_account.get("display_name", "")
         orig_user = orig_account.get("username", "")
-        parts.append(f"🔁 <b>{display_name}</b> retruthed <b>{orig_name}</b> (@{orig_user})")
-        parts.append("")
-        content = strip_html(reblog.get("content", ""))
-        content = _translate_content(content, translator)
+        add(
+            f"🔁 <b>{_esc(display_name)}</b> retruthed <b>{_esc(orig_name)}</b> (@{_esc(orig_user)})",
+            f"🔁 {display_name} retruthed {orig_name} (@{orig_user})",
+        )
+        add("")
+        content = _translate_content(strip_html(reblog.get("content", "")), translator)
         if content:
-            parts.append(content)
-        media_urls = _extract_media(reblog)
+            add(_esc(content), content)
+        media = _extract_media(reblog)
         url = _post_url(reblog)
     else:
-        parts.append(f"<b>{display_name}</b> (@{username})")
-        parts.append("")
-        content = strip_html(post.get("content", ""))
-        content = _translate_content(content, translator)
+        add(f"<b>{_esc(display_name)}</b> (@{_esc(username)})", f"{display_name} (@{username})")
+        add("")
+        content = _translate_content(strip_html(post.get("content", "")), translator)
         if content:
-            parts.append(content)
-        media_urls = _extract_media(post)
+            add(_esc(content), content)
+        media = _extract_media(post)
         url = _post_url(post)
 
     # Quote post
@@ -144,18 +187,29 @@ def format_post(post: dict, translator: PostTranslator | None = None) -> Formatt
         quote_account = quote.get("account", {})
         quote_name = quote_account.get("display_name", "")
         quote_user = quote_account.get("username", "")
-        quote_content = strip_html(quote.get("content", ""))
-        quote_content = _translate_content(quote_content, translator)
-        parts.append("")
-        parts.append(f"┃ <b>{quote_name}</b> (@{quote_user})")
+        quote_content = _translate_content(strip_html(quote.get("content", "")), translator)
+        add("")
+        add(f"┃ <b>{_esc(quote_name)}</b> (@{_esc(quote_user)})", f"┃ {quote_name} (@{quote_user})")
         if quote_content:
-            parts.append(f"┃ {quote_content}")
+            add(f"┃ {_esc(quote_content)}", f"┃ {quote_content}")
         # Include quote media if main post has none
-        if not media_urls:
-            media_urls = _extract_media(quote)
+        if not media:
+            media = _extract_media(quote)
 
-    parts.append("")
-    parts.append(f"🔗 {url}")
+    sendable = [m for m in media if m.kind in SENDABLE_MEDIA_KINDS]
+    unknown = [m for m in media if m.kind not in SENDABLE_MEDIA_KINDS]
 
-    text = "\n".join(parts)
-    return FormattedPost(text=text, media_urls=media_urls)
+    # Unknown attachments (e.g. audio) can't be sent as photo/video — link them.
+    if unknown:
+        add("")
+        for item in unknown:
+            add(f"📎 {_esc(item.url)}", f"📎 {item.url}")
+
+    add("")
+    add(f"🔗 {_esc(url)}", f"🔗 {url}")
+
+    return FormattedPost(
+        text="\n".join(html_parts),
+        plain_text="\n".join(plain_parts),
+        media=sendable,
+    )

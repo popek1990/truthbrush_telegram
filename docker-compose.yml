@@ -6,6 +6,12 @@ services:
     volumes:
       - monitor-data:/data
     command: ["realDonaldTrump", "--interval", "60", "--state-file", "/data/truthbrush_state.json", "--max-backfill-age", "21600", "--max-posts-per-poll", "20"]
+    logging:
+      # Cap the json-file log so it cannot grow without bound on disk.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       # Checks the liveness heartbeat, not last_check: the heartbeat is refreshed
       # even during a deliberate backoff or idle pause, so Docker does not restart

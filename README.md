@@ -9,7 +9,7 @@ Monitoruje wybranych uzytkownikow Truth Social i automatycznie przesyla ich nowe
 - Zwykle posty (tekst + zdjecia)
 - Retruthy (reposty)
 - Cytaty
-- Albumy (wiele zdjec)
+- Albumy (wiele zdjec/wideo), wideo (`sendVideo`) i `gifv` (`sendAnimation`)
 - Automatyczne tlumaczenie na polski (lub inny jezyk)
 - Wybor silnika tlumaczenia: **OpenAI GPT-4o-mini** (lepsza jakosc) lub **Google Translate** (darmowe)
 - Sledzenie kosztow tlumaczenia (per model, dziennie i lacznie)
@@ -75,6 +75,9 @@ OPENAI_API_KEY=<openai_api_key>
 MAX_BACKFILL_AGE_SECONDS=21600    # 6h; 0 wylacza ochrone
 MAX_POSTS_PER_POLL=20             # 0 wylacza limit batcha
 
+# Alert, gdy od dawna nie udaje sie pobrac postow (siec / Cloudflare / 5xx)
+ALERT_AFTER_NO_SUCCESS=7200       # 2h; 0 wylacza alert
+
 # Proxy (opcjonalne, jesli geoblock)
 # http_proxy=socks5://127.0.0.1:1080
 # https_proxy=socks5://127.0.0.1:1080
@@ -108,6 +111,40 @@ Forwarder chroni Telegram i koszty GPT po dluzszej przerwie serwera.
 - `MAX_POSTS_PER_POLL=20` — jesli jeden poll zwroci wiecej niz 20 postow, batch zostanie pominiety jako potencjalny backlog.
 - Obie decyzje sa wykonywane przed formatowaniem, tlumaczeniem i wysylka na Telegram.
 - Ustawienie wartosci `0` wylacza dana ochrone.
+
+### Alert, gdy pobieranie nie dziala (siec / Cloudflare / 5xx)
+
+Blad sieci, strona Cloudflare albo HTTP 5xx nie jest juz myluco traktowany jak „brak
+nowych postow” — monitor rozpoznaje go jako nieudane pobranie:
+
+- `last_check` **nie** jest aktualizowany, liczniki nie sa zerowane, bot **nie** jest
+  wstrzymywany (to nie grozi blokada konta) — po lagodnym backoffie (do 5 min) probuje dalej.
+- Jesli przez `--alert-after-no-success` sekund (domyslnie **7200 s = 2h**, env
+  `ALERT_AFTER_NO_SUCCESS`, `0` wylacza) nie uda sie zadne pobranie, bot wysyla **jeden**
+  alert na Telegram, a po powrocie do normy **jedna** wiadomosc „✅ Monitor Truth Social
+  znow dziala”. Blad wysylki alertu nie wywala monitora.
+
+### Obsluga mediow (zdjecia, wideo, albumy)
+
+- Typ zalacznika jest zachowywany: zdjecie → `sendPhoto`, wideo → `sendVideo`,
+  `gifv` → `sendAnimation`, album (kilka zdjec/wideo) → `sendMediaGroup` (moze mieszac
+  zdjecia i wideo).
+- Gdy tekst nie miesci sie w podpisie (limit 1024), media ida bez podpisu, a pelny tekst
+  jako osobna wiadomosc. Po czesciowym sukcesie (media poszly, tekst nie) ponowienie
+  **nie** wysyla mediow drugi raz.
+- Gdy Telegram nie przyjmie medium z URL (zly typ / za duzy plik) albo zalacznik jest
+  nieznanego typu (np. audio), jego link trafia do tekstu zamiast przepasc.
+
+### Bezpieczny HTML i odporna wysylka
+
+- Tresc, nazwy i wynik tlumaczenia sa escapowane (`&`, `<`, `>`) przed wyslaniem z
+  `parse_mode=HTML`, wiec znak `<` czy `&` w poscie nie wywala parsera Telegrama i nie
+  blokuje kolejki w nieskonczonosc.
+- Blad dotyczacy **konkretnego posta** (400 „can't parse entities”, za dluga wiadomosc,
+  blad medium): po 3 nieudanych probach bot wysyla wersje awaryjna (zwykly tekst bez HTML,
+  z linkiem) i idzie dalej.
+- Blad dotyczacy **calego kanalu/bota** (401 zly token bota, 403 bot wyrzucony, 400 „chat
+  not found”) **nie** przewija postow — bot ponawia i nie gubi wiadomosci.
 
 ### Backoff przy bledach logowania / rate limit
 
@@ -159,6 +196,11 @@ services:
     volumes:
       - monitor-data:/data
     command: ["realDonaldTrump", "--interval", "60", "--state-file", "/data/truthbrush_state.json", "--max-backfill-age", "21600", "--max-posts-per-poll", "20"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"      # rotacja logow Dockera (bez limitu plik rosnie w nieskonczonosc)
+        max-file: "3"
 
 volumes:
   monitor-data:
@@ -194,6 +236,9 @@ truthbrush monitor realDonaldTrump --interval 60 --max-backfill-age 21600 --max-
 
 # Test bez Telegrama
 truthbrush monitor realDonaldTrump --dry-run
+
+# Alert gdy od 2h nie udaje sie pobrac postow (0 wylacza)
+truthbrush monitor realDonaldTrump --alert-after-no-success 7200
 ```
 
 ## Oryginalne komendy truthbrush
@@ -242,6 +287,15 @@ truthbrush ads                       # reklamy
 | Niekompletny error | `"Cannot authenticate to ."` → `"Cannot authenticate to Truth Social."` |
 | `!= None` | Niezgodnosc z PEP 8 |
 | Backlog po awarii | Po starym `last_check` skrypt nie wysyla historii i nie uruchamia GPT |
+| HTML blokuje kolejke | Nieescapowane `<`/`&` → Telegram 400 → post wracal w nieskonczonosc i tlumaczyl sie co cykl |
+| Ciche bledy fetch | `CurlError`/5xx/Cloudflare wygladaly jak „brak nowych postow" — teraz `FetchError` + alert |
+| Zgubione wideo | Kazde medium szlo jako `sendPhoto`; teraz wideo → `sendVideo`, `gifv` → `sendAnimation` |
+| Ucięty tekst z mediami | Tekst >1024 znakow gubiony w podpisie; teraz pelny tekst jako osobna wiadomosc |
+| `_truncate` tnie encje | Liczyl znaki Pythona, nie UTF-16, i ciął w srodku `&amp;` |
+| `AttributeError` w `_check_ratelimit` | `x-ratelimit-remaining` bez `x-ratelimit-reset` → crash; dodano limit sleepa 300 s |
+| OpenAI bez timeoutu | `OpenAI(timeout=30, max_retries=2)`; `finish_reason=="length"` → oryginal |
+| Niatomowy `usage.json` | `mkstemp` + `os.replace` jak w `state.py` |
+| Brak rotacji logow | `docker-compose.yml`: `json-file` z `max-size: 10m`, `max-file: 3` |
 
 ### Nowe pliki
 

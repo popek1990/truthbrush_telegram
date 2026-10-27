@@ -260,6 +260,16 @@ def comments(post: str, includeall: bool, onlyfirst: bool, top_num: int = 40):
         "auth/rate-limit failures (default: 5)"
     ),
 )
+@click.option(
+    "--alert-after-no-success",
+    default=None,
+    type=int,
+    help=(
+        "Send one Telegram alert if no fetch has succeeded for this many seconds "
+        "(network/Cloudflare/5xx), and one 'recovered' message afterwards "
+        "(default: env ALERT_AFTER_NO_SUCCESS or 7200; 0 disables)"
+    ),
+)
 def monitor(
     username: str,
     interval: int,
@@ -268,6 +278,7 @@ def monitor(
     max_backfill_age: int | None,
     max_posts_per_poll: int | None,
     max_auth_failures: int,
+    alert_after_no_success: int | None,
 ):
     """Monitor a user's posts and forward new ones to Telegram.
 
@@ -280,6 +291,7 @@ def monitor(
     from .monitor import TruthMonitor
     from .monitor import DEFAULT_MAX_BACKFILL_AGE_SECONDS
     from .monitor import DEFAULT_MAX_POSTS_PER_POLL
+    from .monitor import DEFAULT_ALERT_AFTER_NO_SUCCESS_SECONDS
     from .state import StateManager
     from .telegram import TelegramSender
     from .translator import PostTranslator
@@ -321,6 +333,11 @@ def monitor(
         "MAX_POSTS_PER_POLL",
         DEFAULT_MAX_POSTS_PER_POLL,
     )
+    alert_after_no_success = _option_or_env_int(
+        alert_after_no_success,
+        "ALERT_AFTER_NO_SUCCESS",
+        DEFAULT_ALERT_AFTER_NO_SUCCESS_SECONDS,
+    )
 
     truth_monitor = TruthMonitor(
         username=username,
@@ -333,5 +350,6 @@ def monitor(
         max_backfill_age_seconds=max_backfill_age,
         max_posts_per_poll=max_posts_per_poll,
         max_auth_failures=max_auth_failures,
+        alert_after_no_success=alert_after_no_success,
     )
     truth_monitor.run()
