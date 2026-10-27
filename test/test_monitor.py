@@ -418,6 +418,42 @@ def test_get_raises_token_invalid_on_401(monkeypatch):
         api._get("/v1/accounts/lookup")
 
 
+def test_get_returns_none_on_requests_error(monkeypatch):
+    """A curl_cffi RequestsError (e.g. timeout) is caught like a CurlError."""
+    import curl_cffi
+    from truthbrush.api import Api
+
+    api = Api(token="token")
+
+    class BoomSession:
+        def get(self, *args, **kwargs):
+            raise curl_cffi.requests.RequestsError("connection timed out")
+
+    monkeypatch.setattr(api, "_make_session", lambda: BoomSession())
+
+    assert api._get("/v1/accounts/lookup") is None
+
+
+def test_pull_statuses_sorts_ids_numerically(monkeypatch):
+    """IDs of different length sort numerically, not lexicographically."""
+    from truthbrush.api import Api
+
+    api = Api(token="token")
+    page = [
+        {"id": "99", "created_at": "2026-01-01T00:00:00+00:00"},
+        {"id": "100", "created_at": "2026-01-01T00:00:00+00:00"},
+        {"id": "9", "created_at": "2026-01-01T00:00:00+00:00"},
+    ]
+    pages = [page, []]  # second (empty) page ends pagination
+    monkeypatch.setattr(api, "lookup", lambda handle: {"id": "42"})
+    monkeypatch.setattr(api, "_get", lambda url, params=None: pages.pop(0))
+
+    ids = [post["id"] for post in api.pull_statuses("someone")]
+
+    # Newest first: 100 > 99 > 9 (a string sort would mis-order "100" vs "99").
+    assert ids == ["100", "99", "9"]
+
+
 # ----------------------------------------------------------------------
 # Delivery resilience: bad posts, channel errors, retries, media
 # ----------------------------------------------------------------------

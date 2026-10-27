@@ -216,7 +216,9 @@ class Api:
                     "User-Agent": USER_AGENT,
                 },
             )
-        except curl_cffi.curl.CurlError as e:
+        except (curl_cffi.curl.CurlError, requests.RequestsError) as e:
+            # RequestsError (timeouts, connection/proxy errors) is a separate
+            # branch in some curl_cffi versions, so catch it alongside CurlError.
             logger.error(f"Curl error: {e}")
             return None
 
@@ -253,7 +255,7 @@ class Api:
                         "User-Agent": USER_AGENT,
                     },
                 )
-            except curl_cffi.curl.CurlError as e:
+            except (curl_cffi.curl.CurlError, requests.RequestsError) as e:
                 logger.error(f"Curl error in paginated request: {e}")
                 return
             link_header = resp.headers.get("Link", "")
@@ -263,7 +265,7 @@ class Api:
                 if len(parts) == 2 and parts[1].strip() == 'rel="next"':
                     next_link = parts[0].strip("<>")
                     break
-            logger.info(f"Next: {next_link}, resp: {resp}, headers: {resp.headers}")
+            logger.debug(f"Next: {next_link}, status: {resp.status_code}")
             yield resp.json()
 
             # Will also sleep
@@ -351,7 +353,12 @@ class Api:
             min_id = str(date_to_bound(start_date, "start"))
         if end_date is not None:
             max_id = str(date_to_bound(end_date, "end"))
-        assert min_id < max_id, "min_id must be less than max_id"
+        # IDs are numeric strings of varying length — compare as ints, not
+        # lexicographically (e.g. "99" < "100"). ``max_id is None`` means no
+        # upper bound (handled below), so it is allowed here.
+        assert (
+            max_id is None or int(min_id) < int(max_id)
+        ), "min_id must be less than max_id"
 
         page = 0
         while page < limit:
@@ -608,8 +615,9 @@ class Api:
                 logger.error(f"Result is not a list (it's a {type(result)}): {result}")
 
             posts = sorted(
-                result, key=lambda k: k["id"], reverse=True
-            )  # reverse chronological order (recent first, older last)
+                result, key=lambda k: int(k["id"]), reverse=True
+            )  # reverse chronological order (recent first, older last); IDs are
+            # numeric strings of varying length, so compare them as ints
             params["max_id"] = posts[-1][
                 "id"
             ]  # when pulling the next page, get posts before this (the oldest)
