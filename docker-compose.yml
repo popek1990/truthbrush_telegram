@@ -5,13 +5,16 @@ services:
     env_file: .env
     volumes:
       - monitor-data:/data
-    command: ["realDonaldTrump", "--interval", "5", "--state-file", "/data/truthbrush_state.json", "--max-backfill-age", "21600", "--max-posts-per-poll", "20"]
+    command: ["realDonaldTrump", "--interval", "60", "--state-file", "/data/truthbrush_state.json", "--max-backfill-age", "21600", "--max-posts-per-poll", "20"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import json, sys; from datetime import datetime, timezone, timedelta; state=json.load(open('/data/truthbrush_state.json')); ts=datetime.fromisoformat(state.get('realDonaldTrump',{}).get('last_check','2000-01-01T00:00:00+00:00')); sys.exit(0 if datetime.now(timezone.utc)-ts < timedelta(minutes=5) else 1)"]
+      # Checks the liveness heartbeat, not last_check: the heartbeat is refreshed
+      # even during a deliberate backoff or idle pause, so Docker does not restart
+      # the container while it is intentionally waiting.
+      test: ["CMD", "python", "-c", "import json, sys; from datetime import datetime, timezone, timedelta; state=json.load(open('/data/truthbrush_state.json')); hb=state.get('_heartbeat'); sys.exit(0 if hb and datetime.now(timezone.utc)-datetime.fromisoformat(hb) < timedelta(minutes=5) else 1)"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
 
 
 volumes:

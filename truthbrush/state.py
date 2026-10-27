@@ -76,6 +76,19 @@ class StateManager:
         self._state[username]["last_check"] = datetime.now(timezone.utc).isoformat()
         self._save()
 
+    def update_heartbeat(self) -> None:
+        """Record a process-liveness timestamp, independent of polling success.
+
+        Used by the Docker healthcheck so the container is not restarted during
+        a deliberate backoff or idle wait (when ``last_check`` does not advance).
+        """
+        self._state["_heartbeat"] = datetime.now(timezone.utc).isoformat()
+        self._save()
+
+    def get_heartbeat(self) -> Optional[str]:
+        """Get the last liveness heartbeat timestamp, if any."""
+        return self._state.get("_heartbeat")
+
     def get_last_check(self, username: str) -> Optional[str]:
         """Get the last check timestamp for healthcheck purposes."""
         entry = self._state.get(username)

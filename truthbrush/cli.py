@@ -5,6 +5,7 @@ import os
 import click
 from datetime import date
 import datetime
+from loguru import logger
 from .api import Api
 
 api = Api()
@@ -250,6 +251,15 @@ def comments(post: str, includeall: bool, onlyfirst: bool, top_num: int = 40):
         "(default: env MAX_POSTS_PER_POLL or 20; 0 disables)"
     ),
 )
+@click.option(
+    "--max-auth-failures",
+    default=5,
+    type=int,
+    help=(
+        "Pause polling and send one Telegram alert after this many consecutive "
+        "auth/rate-limit failures (default: 5)"
+    ),
+)
 def monitor(
     username: str,
     interval: int,
@@ -257,6 +267,7 @@ def monitor(
     dry_run: bool,
     max_backfill_age: int | None,
     max_posts_per_poll: int | None,
+    max_auth_failures: int,
 ):
     """Monitor a user's posts and forward new ones to Telegram.
 
@@ -272,6 +283,12 @@ def monitor(
     from .state import StateManager
     from .telegram import TelegramSender
     from .translator import PostTranslator
+
+    if interval < 30:
+        logger.warning(
+            f"Polling interval of {interval}s is low; intervals under 30s risk "
+            "rate limiting or an account block. Consider --interval 60."
+        )
 
     sender = None
     if not dry_run:
@@ -315,5 +332,6 @@ def monitor(
         translator=translator,
         max_backfill_age_seconds=max_backfill_age,
         max_posts_per_poll=max_posts_per_poll,
+        max_auth_failures=max_auth_failures,
     )
     truth_monitor.run()

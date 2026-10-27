@@ -19,7 +19,7 @@ Monitoruje wybranych uzytkownikow Truth Social i automatycznie przesyla ich nowe
 ### Wymagania
 
 - Docker + Docker Compose
-- Konto Truth Social (login + haslo)
+- Konto Truth Social — **zalecany token z przegladarki** (patrz nizej), alternatywnie login + haslo
 - Bot Telegram (stworzony przez [@BotFather](https://t.me/BotFather))
 - Opcjonalnie: klucz API OpenAI (dla lepszych tlumaczen)
 
@@ -33,13 +33,32 @@ nano .env          # uzupelnij dane
 docker compose up -d
 ```
 
+### Zalecany tryb: token (`TRUTHSOCIAL_TOKEN`)
+
+Najbezpieczniej jest uzyc tokena z zalogowanej przegladarki zamiast loginu i hasla.
+Logowanie haslem (OAuth password grant) przy wygasniesciu sesji potrafi wpasc w petle
+ponownych logowan, skonczyc sie bledem `429` i wymuszona weryfikacja SMS / blokada konta.
+
+Jak zdobyc token:
+
+1. Zaloguj sie na `truthsocial.com` w przegladarce.
+2. Otworz DevTools (`F12`) → zakladka **Network**.
+3. Kliknij dowolne zapytanie do `/api/v1/...` → **Headers**.
+4. Z naglowka `authorization: Bearer <token>` skopiuj samego `<token>` (bez slowa `Bearer`).
+5. Wklej go do `.env` jako `TRUTHSOCIAL_TOKEN=`.
+
+> **Nie wylogowuj sie** w tej przegladarce — wylogowanie uniewaznia token.
+> Gdy token przestanie dzialac, bot wysle alert na Telegram i sie wstrzyma (patrz nizej) —
+> wtedy zdobadz nowy token, wklej go do `.env` i zrestartuj kontener.
+
 ### Konfiguracja `.env`
 
 ```bash
-# Truth Social — login + haslo LUB token
-TRUTHSOCIAL_USERNAME=twoj_login
-TRUTHSOCIAL_PASSWORD=twoje_haslo
-# TRUTHSOCIAL_TOKEN=            # alternatywa zamiast loginu
+# Truth Social — ZALECANE: token z przegladarki (patrz wyzej)
+TRUTHSOCIAL_TOKEN=<token_z_przegladarki>
+# Alternatywa (ryzykowna): login + haslo
+# TRUTHSOCIAL_USERNAME=twoj_login
+# TRUTHSOCIAL_PASSWORD=twoje_haslo
 
 # Telegram (wymagane)
 TELEGRAM_BOT_TOKEN=<bot_token>
@@ -90,6 +109,32 @@ Forwarder chroni Telegram i koszty GPT po dluzszej przerwie serwera.
 - Obie decyzje sa wykonywane przed formatowaniem, tlumaczeniem i wysylka na Telegram.
 - Ustawienie wartosci `0` wylacza dana ochrone.
 
+### Backoff przy bledach logowania / rate limit
+
+Monitor nie odpytuje Truth Social w kolko po bledzie. Przy kolejnych bledach autoryzacji
+(HTTP 401/403) lub rate limit (HTTP 429) nastepny poll odbywa sie dopiero po rosnacym
+opoznieniu: **1, 2, 4, 8, 16, 30 minut** (maksymalnie 30 min). Udany poll zeruje licznik.
+
+- Przy `429` z naglowkiem `Retry-After` / `x-ratelimit-reset` bot czeka `max(retry_after, backoff)`.
+- **Tryb token-only:** przy 401/403 token nie jest kasowany (nie ma czym sie zalogowac) —
+  w logach pojawia sie prosba o wklejenie nowego `TRUTHSOCIAL_TOKEN`.
+- **Tryb haslo:** ponowne logowanie haslem dzieje sie tylko w ramach backoffu, nigdy czesciej.
+- Czekanie jest przerywalne (SIGTERM) — `docker compose down` / restart dziala natychmiast.
+
+### Twardy limit i alert na Telegram
+
+Po `--max-auth-failures` kolejnych nieudanych probach autoryzacji (domyslnie **5**) bot:
+
+1. wysyla **jedna** wiadomosc na kanal Telegram (np. „⚠️ Monitor Truth Social: logowanie
+   nie dziala (5 prob). Prawdopodobnie wygasl token lub konto wymaga weryfikacji. Bot wstrzymany.”),
+2. przestaje odpytywac Truth Social i czeka bezczynnie do restartu (nie konczy procesu,
+   zeby `restart: unless-stopped` nie uruchomil petli od nowa).
+
+Alertu nie ma w trybie `--dry-run` ani bez skonfigurowanego Telegrama. Blad wysylki alertu
+nie wywala monitora. Zdrowie kontenera opiera sie na znaczniku „zyje” (`_heartbeat`)
+odswiezanym nawet podczas backoffu i bezczynnego czekania, wiec Docker nie restartuje
+kontenera w trakcie swiadomego oczekiwania.
+
 ### Bot Telegram — konfiguracja
 
 1. Napisz do [@BotFather](https://t.me/BotFather) na Telegramie
@@ -113,7 +158,7 @@ services:
     env_file: .env
     volumes:
       - monitor-data:/data
-    command: ["realDonaldTrump", "--interval", "5", "--state-file", "/data/truthbrush_state.json", "--max-backfill-age", "21600", "--max-posts-per-poll", "20"]
+    command: ["realDonaldTrump", "--interval", "60", "--state-file", "/data/truthbrush_state.json", "--max-backfill-age", "21600", "--max-posts-per-poll", "20"]
 
 volumes:
   monitor-data:
@@ -145,7 +190,7 @@ export TRANSLATE_TO=pl
 export OPENAI_API_KEY=<openai_api_key>     # opcjonalne
 
 # Uruchomienie
-truthbrush monitor realDonaldTrump --interval 5 --max-backfill-age 21600 --max-posts-per-poll 20
+truthbrush monitor realDonaldTrump --interval 60 --max-backfill-age 21600 --max-posts-per-poll 20
 
 # Test bez Telegrama
 truthbrush monitor realDonaldTrump --dry-run
@@ -233,8 +278,9 @@ rebuild.sh
 
 ## Wazne
 
-- Interval ponizej 3 sekund moze spowodowac rate limit / ban
-- Przy 2+ kontach bezpieczny interval to 5 sekund
+- Domyslny i zalecany interval to **60 s**; ponizej 30 s bot loguje ostrzezenie (ryzyko rate limit / ban)
+- Zalecany tryb to `TRUTHSOCIAL_TOKEN` — login + haslo jest ryzykowny (patrz sekcja o tokenie)
+- Przy bledach autoryzacji / 429 bot stosuje backoff (1→30 min), a po `--max-auth-failures` probach wysyla alert i sie wstrzymuje
 - Truth Social moze blokowac ruch spoza USA — uzyj proxy (zmienna `http_proxy`)
 - Bot **musi byc adminem** kanalu Telegram zeby moc pisac
 - Przy pierwszym uruchomieniu zapisuje ostatni post i czeka na nowe — nie spamuje historia
@@ -243,7 +289,8 @@ rebuild.sh
 ## Weryfikacja
 
 ```bash
-python3 -m py_compile truthbrush/monitor.py truthbrush/state.py truthbrush/cli.py
+python3 -m py_compile truthbrush/*.py
+pytest test/test_monitor.py          # test_api.py wymaga sieci
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps

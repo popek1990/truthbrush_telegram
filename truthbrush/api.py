@@ -52,6 +52,25 @@ class CFBlockException(LoginErrorException):
     pass
 
 
+class TokenInvalidException(LoginErrorException):
+    """Raised when the API rejects the auth token (HTTP 401/403)."""
+
+    pass
+
+
+class RateLimitException(Exception):
+    """Raised when the API returns HTTP 429.
+
+    Attributes:
+        retry_after : suggested wait in seconds (from ``Retry-After`` or
+            ``x-ratelimit-reset`` headers), or ``None`` if not provided.
+    """
+
+    def __init__(self, message: str, retry_after: Optional[int] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def date_to_bound(dt_input: "str | datetime", bound: Literal["start", "end"]) -> int:
     if isinstance(dt_input, str):
         dt_input = datetime.fromisoformat(dt_input)
@@ -87,6 +106,11 @@ class Api:
         self.__password = password
         self.auth_id = token
 
+    @property
+    def has_password_auth(self) -> bool:
+        """True when a username and password are available for re-login."""
+        return bool(self.__username and self.__password)
+
     def __check_login(self):
         """Runs before any login-walled function to check for login credentials and generates an auth ID token"""
         if self.auth_id is None:
@@ -100,6 +124,47 @@ class Api:
     def _make_session(self):
         s = requests.Session()
         return s
+
+    def _parse_retry_after(self, resp) -> Optional[int]:
+        """Extract a retry delay in seconds from a rate-limited response.
+
+        Prefers the ``Retry-After`` header (seconds), then falls back to the
+        ``x-ratelimit-reset`` timestamp. Returns ``None`` when neither is usable.
+        """
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(0, int(float(retry_after)))
+            except (ValueError, TypeError):
+                pass
+
+        reset = resp.headers.get("x-ratelimit-reset")
+        if reset:
+            try:
+                reset_dt = date_parse.parse(reset)
+                if reset_dt.tzinfo is None:
+                    reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+                delta = (reset_dt - datetime.now(timezone.utc)).total_seconds()
+                if delta > 0:
+                    return int(delta)
+            except (ValueError, TypeError, OverflowError):
+                pass
+
+        return None
+
+    def _raise_for_status(self, resp) -> None:
+        """Turn auth and rate-limit HTTP statuses into typed exceptions."""
+        status = resp.status_code
+        if status in (401, 403):
+            raise TokenInvalidException(
+                f"Authentication failed (HTTP {status}); the token may be invalid."
+            )
+        if status == 429:
+            retry_after = self._parse_retry_after(resp)
+            raise RateLimitException(
+                "Rate limited by Truth Social (HTTP 429).",
+                retry_after=retry_after,
+            )
 
     def _check_ratelimit(self, resp):
         if resp.headers.get("x-ratelimit-limit") is not None:
@@ -141,6 +206,10 @@ class Api:
         except curl_cffi.curl.CurlError as e:
             logger.error(f"Curl error: {e}")
             return None
+
+        # Surface auth (401/403) and rate-limit (429) statuses as exceptions
+        # so callers (notably the monitor) can back off instead of hammering.
+        self._raise_for_status(resp)
 
         # Will also sleep
         self._check_ratelimit(resp)
@@ -483,6 +552,9 @@ class Api:
             except json.JSONDecodeError as e:
                 logger.error(f"Unable to pull user #{user_id}'s statuses': {e}")
                 break
+            except (LoginErrorException, RateLimitException):
+                # Let auth/rate-limit errors propagate so the caller can back off.
+                raise
             except Exception as e:
                 logger.error(f"Misc. error while pulling statuses for {user_id}: {e}")
                 break
@@ -560,6 +632,15 @@ class Api:
                     "User-Agent": USER_AGENT,
                 },
             )
+
+            # Rate limited during login — back off instead of retrying blindly
+            if sess_req.status_code == 429:
+                retry_after = self._parse_retry_after(sess_req)
+                logger.error("Rate limited (429) during authentication")
+                raise RateLimitException(
+                    "Rate limited while authenticating to Truth Social (HTTP 429).",
+                    retry_after=retry_after,
+                )
 
             # Check for 403 errors and identify the specific type
             if sess_req.status_code == 403:
